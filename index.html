@@ -4,113 +4,144 @@
     <title>Seal Murderer - Multiplayer & AI</title>
     <script src="https://unpkg.com"></script>
     <style>
-        body { background: #1a1a1a; color: white; font-family: sans-serif; text-align: center; margin: 0; overflow: hidden; }
-        canvas { background: #333; border: 4px solid #555; image-rendering: pixelated; display: block; margin: 0 auto; }
-        #menu { padding: 20px; }
-        input { padding: 10px; border-radius: 5px; border: none; }
-        button { padding: 10px 20px; cursor: pointer; background: #00ccff; border: none; color: black; font-weight: bold; }
+        body { background: #87CEEB; margin: 0; display: flex; flex-direction: column; align-items: center; font-family: 'Comic Sans MS', cursive; overflow: hidden; }
+        canvas { background: #FFF; border: 10px solid #2F4F4F; border-radius: 20px; display: none; }
+        #lobby-screen { width: 800px; height: 500px; background: white; border: 10px solid #2F4F4F; border-radius: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; text-align: center; }
+        #chat-area { position: absolute; bottom: 20px; left: 20px; width: 260px; background: rgba(255,255,255,0.9); border: 3px solid #000; border-radius: 10px; padding: 10px; box-shadow: 5px 5px 0px #000; }
+        #messages { height: 120px; overflow-y: auto; font-size: 14px; margin-bottom: 5px; color: #333; }
+        input { width: 92%; border: 2px solid #000; border-radius: 5px; padding: 5px; outline: none; }
+        .btn { padding: 10px 20px; font-size: 18px; cursor: pointer; background: #FF4500; color: white; border: 3px solid black; border-radius: 8px; margin: 5px; }
+        #ui { position: absolute; top: 10px; width: 780px; display: none; justify-content: space-between; pointer-events: none; }
+        .stat-box { background: white; padding: 8px 15px; border: 3px solid black; border-radius: 10px; font-weight: bold; }
     </style>
 </head>
 <body>
-    <div id="menu">
-        <h1>SEAL LOBBY</h1>
-        <p>Your ID: <span id="my-id">...</span></p>
-        <input type="text" id="friend-id" placeholder="Paste Friend ID here">
-        <button onclick="connectToFriend()">JOIN FRIEND</button>
-    </div>
-    <canvas id="gameCanvas"></canvas>
+
+<div id="lobby-screen">
+    <h1>SEAL LOBBY</h1>
+    <p>Your ID: <b id="my-id" style="color: blue;">...</b></p>
+    <input type="text" id="friend-id" placeholder="Friend's ID here..." style="width: 250px; margin-bottom: 10px;">
+    <br>
+    <button class="btn" onclick="connectToFriend()">JOIN FRIEND</button>
+    <button class="btn" onclick="startGame(true)">START (SOLO/HOST)</button>
+</div>
+
+<div id="ui">
+    <div class="stat-box">ROLE: <span id="roleText">...</span></div>
+    <div class="stat-box">SPEED: <span id="speedText">5.0</span></div>
+</div>
+
+<div id="chat-area">
+    <div id="messages"><b>SYSTEM:</b> Copy your ID to a friend!</div>
+    <input type="text" id="chatInput" placeholder="Press Enter to talk...">
+</div>
+
+<canvas id="gameCanvas"></canvas>
 
 <script>
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
     canvas.width = 800; canvas.height = 500;
 
-    // --- 1. PLAYER & AI DATA ---
-    let player = { x: 100, y: 100, color: 'cyan', role: 'Bystander' };
-    let friend = { x: -100, y: -100, color: 'lime' }; // Hidden until connected
-    
-    let bots = [
-        { x: 300, y: 200, color: 'yellow', alive: true, vx: 1, vy: 1 },
-        { x: 500, y: 400, color: 'pink', alive: true, vx: -1, vy: 0.5 }
-    ];
+    let gameState = "LOBBY";
+    let player = { x: 400, y: 250, color: '#ADD8E6', speed: 5, hasPet: false, role: 'BYSTANDER' };
+    let friend = { x: -100, y: -100, color: '#98FB98', active: false };
+    let bots = [];
+    let flash = 0;
 
-    // --- 2. MULTIPLAYER (PeerJS) ---
+    // --- MULTIPLAYER (PeerJS) ---
     const peer = new Peer();
-    let connection;
-
-    peer.on('open', (id) => document.getElementById('my-id').innerText = id);
-
+    let conn;
+    peer.on('open', id => document.getElementById('my-id').innerText = id);
+    
     function connectToFriend() {
-        const id = document.getElementById('friend-id').value;
-        connection = peer.connect(id);
+        conn = peer.connect(document.getElementById('friend-id').value);
         setupConn();
     }
-
-    peer.on('connection', (conn) => {
-        connection = conn;
-        setupConn();
-    });
+    peer.on('connection', c => { conn = c; setupConn(); });
 
     function setupConn() {
-        connection.on('data', (data) => {
-            friend.x = data.x; friend.y = data.y; // Sync friend's position
+        conn.on('data', data => {
+            if (data.type === 'move') { friend.x = data.x; friend.y = data.y; friend.active = true; }
+            if (data.type === 'chat') addMsg("<b>Friend:</b> " + data.msg);
+            if (data.type === 'start') startGame(false);
+            if (data.type === 'kill') flash = 1.0;
         });
-        document.getElementById('menu').style.display = 'none';
+        addMsg("<b>SYSTEM:</b> Connected to friend!");
     }
 
-    // --- 3. INPUTS ---
-    let keys = {};
-    window.onkeydown = (e) => keys[e.code] = true;
-    window.onkeyup = (e) => keys[e.code] = false;
+    // --- GAME LOGIC ---
+    function startGame(isHost) {
+        document.getElementById('lobby-screen').style.display = 'none';
+        document.getElementById('ui').style.display = 'flex';
+        canvas.style.display = 'block';
+        gameState = "PLAYING";
 
-    // --- 4. GAME LOOP ---
-    function loop() {
-        // Move Local Player
-        if (keys['ArrowUp']) player.y -= 3;
-        if (keys['ArrowDown']) player.y += 3;
-        if (keys['ArrowLeft']) player.x -= 3;
-        if (keys['ArrowRight']) player.x += 3;
+        player.role = Math.random() > 0.5 ? 'MURDERER' : 'BYSTANDER';
+        if (isHost && conn) conn.send({ type: 'start' });
 
-        // Send Data to Friend
-        if (connection && connection.open) {
-            connection.send({ x: player.x, y: player.y });
-        }
+        bots = [
+            { x: 200, y: 150, color: '#FFB6C1', alive: true, vx: 2, vy: 2 },
+            { x: 600, y: 350, color: '#FFD700', alive: true, vx: -1.5, vy: -2 }
+        ];
+    }
 
-        // --- 5. AI WANDERING LOGIC ---
-        bots.forEach(bot => {
-            if (bot.alive) {
-                bot.x += bot.vx;
-                bot.y += bot.vy;
-                // Bounce off walls
-                if (bot.x < 0 || bot.x > canvas.width - 20) bot.vx *= -1;
-                if (bot.y < 0 || bot.y > canvas.height - 20) bot.vy *= -1;
-                // Randomly change direction
-                if (Math.random() < 0.01) {
-                    bot.vx = (Math.random() - 0.5) * 4;
-                    bot.vy = (Math.random() - 0.5) * 4;
-                }
+    // --- CHAT & INPUTS ---
+    const chatInput = document.getElementById('chatInput');
+    const messages = document.getElementById('messages');
+    chatInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+            let val = chatInput.value;
+            if (val.toLowerCase() === 'broguin') { player.hasPet = true; addMsg("<b>PET:</b> Broguin spawned!"); }
+            else if (val !== "") {
+                addMsg("<b>You:</b> " + val);
+                if (conn) conn.send({ type: 'chat', msg: val });
             }
-        });
+            chatInput.value = ""; chatInput.blur();
+        }
+    });
 
-        draw();
-        requestAnimationFrame(loop);
+    function addMsg(t) { let d=document.createElement('div'); d.innerHTML=t; messages.appendChild(d); messages.scrollTop=messages.scrollHeight; }
+    let keys = {}; window.onkeydown = e => { keys[e.code] = true; if(e.code === 'Enter') chatInput.focus(); }; window.onkeyup = e => keys[e.code] = false;
+
+    function loop() {
+        if (gameState === "PLAYING" && document.activeElement !== chatInput) {
+            if (keys['ArrowUp']) player.y -= player.speed; if (keys['ArrowDown']) player.y += player.speed;
+            if (keys['ArrowLeft']) player.x -= player.speed; if (keys['ArrowRight']) player.x += player.speed;
+            if (conn) conn.send({ type: 'move', x: player.x, y: player.y });
+
+            if (keys['Space'] && player.role === 'MURDERER') {
+                bots.forEach(b => {
+                    if (b.alive && Math.hypot(player.x - b.x, player.y - b.y) < 60) {
+                        b.alive = false; flash = 1.0;
+                        if (player.hasPet) player.speed += 1.5;
+                        if (conn) conn.send({ type: 'kill' });
+                    }
+                });
+            }
+            bots.forEach(b => { if (b.alive) { b.x += b.vx; b.y += b.vy; if (b.x<0 || b.x>750) b.vx*=-1; if (b.y<0 || b.y>460) b.vy*=-1; } });
+        }
+        draw(); requestAnimationFrame(loop);
+    }
+
+    function drawSeal(x, y, color, isDead) {
+        ctx.lineWidth = 3; ctx.strokeStyle = "black"; ctx.fillStyle = color;
+        ctx.beginPath(); ctx.ellipse(x + 25, y + 30, 30, 18, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x + 50, y + 20, 15, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        if (isDead) { ctx.fillStyle = "black"; ctx.font = "bold 16px Arial"; ctx.fillText("X X", x + 40, y + 25); }
     }
 
     function draw() {
+        if (gameState !== "PLAYING") return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        // Draw AI Bots
-        bots.forEach(b => {
-            ctx.fillStyle = b.color;
-            ctx.fillRect(b.x, b.y, 25, 25);
-        });
-        // Draw Friend
-        ctx.fillStyle = friend.color;
-        ctx.fillRect(friend.x, friend.y, 25, 25);
-        // Draw Player
-        ctx.fillStyle = player.color;
-        ctx.fillRect(player.x, player.y, 25, 25);
+        document.getElementById('roleText').innerText = player.role;
+        document.getElementById('speedText').innerText = player.speed.toFixed(1);
+        bots.forEach(b => drawSeal(b.x, b.y, b.color, !b.alive));
+        if (friend.active) drawSeal(friend.x, friend.y, friend.color, false);
+        drawSeal(player.x, player.y, player.color, false);
+        if (player.hasPet) { ctx.fillStyle = "black"; ctx.beginPath(); ctx.ellipse(player.x - 20, player.y + 30, 10, 15, 0, 0, Math.PI * 2); ctx.fill(); }
+        if (flash > 0) { ctx.fillStyle = `rgba(255, 0, 0, ${flash})`; ctx.fillRect(0, 0, canvas.width, canvas.height); flash -= 0.04; }
     }
-
     loop();
 </script>
 </body>
